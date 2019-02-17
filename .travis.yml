@@ -3,7 +3,28 @@ python:
   - "3.6"
 # command to install dependencies
 install:
-  - pip install -r requirements.txt
-# command to run tests
-script:
-  - pytest
+  - pip3 install -r requirements.txt
+  - sudo sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf
+  - sudo chmod g+r,o+r  /etc/fuse.conf
+  - docker run -d   -p 6379:6379 redis
+  - git clone https://git.code.sf.net/p/ntfs-3g/pjd-fstest ntfs-3g-pjd-fstest
+  - cd ntfs-3g-pjd-fstest
+  - sed -i 's/^CFLAGS+=-DHAS_ACL -lacl/#CFLAGS+=-DHAS_ACL -lacl/' ./Makefile
+  - make
+  - cd ../
+
+
+jobs:
+  include:
+    - stage: pylint
+      script: pylint main.py
+    - stage: pep8
+      script: pep8 main.py
+    - stage: mount redisfs
+      script:
+        - cd ntfs-3g-pjd-fstest
+        - mkdir testfs
+        - python3 ../main.py testfs
+        - ls -lah testfs
+    - stage: run POSIX FS TESTS
+      script: sudo sh -c  "cd testfs && ls -lah && prove -r ../"

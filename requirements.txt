@@ -1,1 +1,5 @@
 fusepy==3.0.1
+redis
+pylint
+pep8
+

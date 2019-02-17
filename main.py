@@ -4,6 +4,7 @@ import sys
 import redis
 import json
 import errno
+from stat import S_IFDIR, S_IFLNK, S_IFREG
 from time import time
 
 
@@ -41,8 +42,8 @@ class Passthrough(Operations):
 
         dirents = ['.', '..']
         print(path)
-        print(self.redis_client.lrange("/:children", 0, -1))
-        for children in self.redis_client.lrange("/:children", 0, -1):
+        print(self.redis_client.lrange(path + ":children", 0, -1))
+        for children in self.redis_client.lrange(path + ":children", 0, -1):
             dirents.append(str(children, encoding='utf-8'))
         print(dirents)
 
@@ -59,10 +60,34 @@ class Passthrough(Operations):
 
     def rmdir(self, path):
         print("rmdir")
+        parent = os.path.dirname(path)
+        children = os.path.basename(path)
+        all_keys = list(self.redis_client.hgetall(path).keys())
+        print(all_keys)
+        self.redis_client.hdel(path, *all_keys)
+        self.redis_client.lrem(parent + ":children", 0, children)
         return 0
 
     def mkdir(self, path, mode):
         print("mkdir")
+        parent = os.path.dirname(path)
+        children = os.path.basename(path)
+        now=time()
+        attr = dict(
+            st_atime = now,
+            st_ctime = now,
+            st_gid = 1000,
+            st_mode = (S_IFDIR | mode),
+            st_mtime = now,
+            st_nlink = 2,
+            st_size = 0,
+            st_uid = 1000
+        )
+        print(attr)
+        self.redis_client.hset(path,"type","dir")
+        self.redis_client.hset(path,"attr",json.dumps(attr))
+        self.redis_client.hset(path,"parent", path)
+        self.redis_client.lpush(parent + ":children",children)
         return 0
 
     def statfs(self, path):
@@ -73,6 +98,12 @@ class Passthrough(Operations):
             'f_frsize', 'f_namemax'))
 
     def unlink(self, path):
+        parent = os.path.dirname(path)
+        children = os.path.basename(path)
+        all_keys = list(self.redis_client.hgetall(path).keys())
+        print(all_keys)
+        self.redis_client.hdel(path, *all_keys)
+        self.redis_client.lrem(parent + ":children",0,children)
         print("unlink")
         return 0
 
@@ -101,6 +132,8 @@ class Passthrough(Operations):
     def create(self, path, mode, fi=None):
         print("create")
         print (path)
+        parent = os.path.dirname(path)
+        children = os.path.basename(path)
         print(mode)
         now = time()
         attr = dict(
@@ -116,23 +149,45 @@ class Passthrough(Operations):
 
         self.redis_client.hset(path,"type","file")
         self.redis_client.hset(path,"attr",json.dumps(attr))
-        self.redis_client.hset(path,"parent","/")
-        self.redis_client.lpush("/:children",path[1:])
+        self.redis_client.hset(path,"parent", path )
+        self.redis_client.lpush(parent + ":children",children)
         return 0
 
     def read(self, path, length, offset, fh):
         print("read")
-        print(path)
-        print(length)
-        print(offset)
-        print(fh)
+        print("Length", length)
+        print("Offset", offset)
 
-        return self.redis_client.get("file")
+        payload = self.redis_client.hget(path,"payload")
+        reqested_payload = payload[offset:(offset + length)]
+        print("got from redis:", len(payload))
+        print ("Got:", len(reqested_payload))
+        return reqested_payload
 
     def write(self, path, buf, offset, fh):
         print("write")
-        os.lseek(fh, offset, os.SEEK_SET)
-        return os.write(fh, buf)
+        now = time()
+        attr = json.loads(self.redis_client.hget(path,"attr"))
+
+
+
+        attr['st_atime'] = now
+        attr['st_mtime'] = now
+
+        if offset > 0:
+            payload = self.redis_client.hget(path,"payload") + buf
+            print("write next chunk", len(buf))
+        else:
+            payload = buf
+            print("got first chunk",len(buf))
+
+        self.redis_client.hset(path,"payload",payload)
+
+        attr['st_size'] = len(payload)
+
+        self.redis_client.hset(path,"attr",json.dumps(attr))
+        return len(buf)
+
 
     def truncate(self, path, length, fh=None):
         print("truncate")

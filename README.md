@@ -20,3 +20,6 @@ python3 /project/main.py /redisfs/
 ## Run tests
 cd /redisfs/ && prove -r ../src/ntfs-3g-pjd-fstest/
 ```
+
+run in foreground mode
+`python3 /project/main.py /redisfs/ --foreground`

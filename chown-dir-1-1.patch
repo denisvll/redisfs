@@ -1,0 +1,20 @@
+--- tests/chown/00.t	2020-11-22 11:15:33.309598524 +0000
++++ tests/chown/00.t	2020-11-22 11:16:02.582839561 +0000
+@@ -9,7 +9,7 @@
+ if supported lchmod; then
+ 	echo "1..186"
+ else
+-	echo "1..171"
++	echo "1..170"
+ fi
+ 
+ n0=`namegen`
+@@ -341,7 +341,7 @@
+ 	test_check $ctime1 -eq $ctime2
+ 	;;
+ Linux:*)
+-	test_check $ctime1 -lt $ctime2
++	# test_check $ctime1 -lt $ctime2
+ 	;;
+ *)
+ 	test_check $ctime1 -le $ctime2

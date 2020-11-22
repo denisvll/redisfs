@@ -1,5 +1,4 @@
-fusepy==3.0.1
+fusepy
 redis
 pylint
-pep8
-
+pycodestyle

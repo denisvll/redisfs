@@ -17,14 +17,14 @@ install:
 jobs:
   include:
     - stage: pylint
-      script: pylint main.py
-    - stage: pep8
-      script: pep8 main.py
-    - stage: mount redisfs
+      script: pylint --max-line-length=120 main.py
+    - stage: pycodestyle
+      script: pycodestyle --max-line-length=120 main.py
+    - stage: run POSIX FS TESTS
       script:
         - cd ntfs-3g-pjd-fstest
+        - patch tests/chown/00.t < ../chown-dir-1-1.patch #https://github.com/libfuse/libfuse/issues/184
         - mkdir testfs
         - python3 ../main.py testfs
         - ls -lah testfs
-    - stage: run POSIX FS TESTS
-      script: sudo sh -c  "cd testfs && ls -lah && prove -r ../"
+        - sudo sh -c  "cd testfs && ls -lah && prove -r ../"

@@ -7,7 +7,6 @@ import json
 from stat import S_IFDIR, S_IFLNK
 from time import time
 import errno
-import pprint
 from uuid import uuid4
 import redis
 
@@ -23,6 +22,7 @@ class Passthrough(Operations):
 
     def __init__(self, redis_client):
         self.redis_client = redis_client
+        self.attr_cache = {}
 
     def __touch_ctime_mtime(self, path):
         now = time()
@@ -30,6 +30,14 @@ class Passthrough(Operations):
         attr = json.loads(self.redis_client.hget(inode, "attr"))
         attr['st_ctime'] = now
         attr['st_mtime'] = now
+        self.attr_cache.pop(inode, None)
+        self.redis_client.hset(inode, "attr", json.dumps(attr))
+
+    # def __remove_from_cache(self, path):
+    #     self.attr_cache.pop(path, None)
+
+    def __set_attr(self, inode, attr):
+        self.attr_cache.pop(inode, None)
         self.redis_client.hset(inode, "attr", json.dumps(attr))
 
     def access(self, path, mode):
@@ -38,21 +46,20 @@ class Passthrough(Operations):
 
     def chmod(self, path, mode):
         print("chmod", path, mode)
-        print("len path", len(path))
         children = os.path.basename(path)
         if len(children) > 256:
             raise FuseOSError(errno.ENAMETOOLONG)
 
         now = time()
 
-        inode = str(self.redis_client.hget(path, "inode"), encoding='utf-8')
+        inode = self.redis_client.hget(path, "inode")
         attr = json.loads(self.redis_client.hget(inode, "attr"))
         print("Got", attr['st_mode'])
         attr['st_atime'] = now
         attr['st_ctime'] = now
         attr['st_mtime'] = now
         attr['st_mode'] = mode
-        self.redis_client.hset(inode, "attr", json.dumps(attr))
+        self.__set_attr(inode, attr)
         return 0
 
     def chown(self, path, uid, gid):
@@ -69,7 +76,7 @@ class Passthrough(Operations):
             attr['st_gid'] = gid
         if uid != -1:
             attr['st_uid'] = uid
-        self.redis_client.hset(inode, "attr", json.dumps(attr))
+        self.__set_attr(inode, attr)
         return 0
 
     def getattr(self, path, fh=None):
@@ -80,13 +87,19 @@ class Passthrough(Operations):
         if len(children) >= 256:
             raise FuseOSError(errno.ENAMETOOLONG)
 
-        try:
-            inode = str(self.redis_client.hget(path, "inode"), encoding='utf-8')
-            attr = json.loads(self.redis_client.hget(inode, "attr"))
-            pprint.pprint(attr)
-
-        except TypeError:
-            print("not found")
+        # if path in self.attr_cache:
+        #     return self.attr_cache[path]
+        # else:
+        if self.redis_client.exists(path):
+            print("path {} exist".format(path))
+            inode = self.redis_client.hget(path, "inode")
+            if inode in self.attr_cache:
+                attr = self.attr_cache[inode]
+            else:
+                attr = json.loads(self.redis_client.hget(inode, "attr"))
+                self.attr_cache[inode] = attr
+        else:
+            print("path {} doesn't exist".format(path))
             raise FuseOSError(errno.ENOENT)
         return attr
 
@@ -107,7 +120,7 @@ class Passthrough(Operations):
 
         attr['st_ctime'] = now
 
-        self.redis_client.hset(inode, "attr", json.dumps(attr))
+        self.__set_attr(inode, attr)
         return 0
 
     def readdir(self, path, fh):
@@ -152,7 +165,7 @@ class Passthrough(Operations):
         self.redis_client.set('icnt', icnt)
         self.redis_client.hset(path, "type", "mknod")
         self.redis_client.hset(path, "inode", inode)
-        self.redis_client.hset(inode, "attr", json.dumps(attr))
+        self.__set_attr(inode, attr)
         self.redis_client.hset(path, "parent", path)
         self.redis_client.lpush(parent + ":children", children)
 
@@ -172,6 +185,7 @@ class Passthrough(Operations):
 
         self.redis_client.hdel(path, *all_keys)
         self.redis_client.delete(inode)
+        self.attr_cache.pop(path, None)
         self.redis_client.lrem(parent + ":children", 0, children)
 
         self.__touch_ctime_mtime(parent)
@@ -201,7 +215,7 @@ class Passthrough(Operations):
         self.redis_client.set('icnt', icnt)
         self.redis_client.hset(path, "type", "dir")
         self.redis_client.hset(path, "inode", inode)
-        self.redis_client.hset(inode, "attr", json.dumps(attr))
+        self.__set_attr(inode, attr)
         self.redis_client.hset(path, "parent", path)
         self.redis_client.lpush(parent + ":children", children)
 
@@ -231,13 +245,13 @@ class Passthrough(Operations):
             all_keys = list(self.redis_client.hgetall(path).keys())
             self.redis_client.hdel(path, *all_keys)
             self.redis_client.lrem(parent + ":children", 0, children)
-            self.redis_client.hset(inode, "attr", json.dumps(attr))
+            self.__set_attr(inode, attr)
 
         else:
             all_keys = list(self.redis_client.hgetall(path).keys())
             self.redis_client.hdel(path, *all_keys)
             self.redis_client.lrem(parent + ":children", 0, children)
-            self.redis_client.hset(inode, "attr", json.dumps(attr))
+            self.__set_attr(inode, attr)
             self.redis_client.delete(inode)
 
         self.__touch_ctime_mtime(parent)
@@ -268,7 +282,7 @@ class Passthrough(Operations):
         self.redis_client.hset(path, "type", "symlink")
         self.redis_client.hset(path, "dst", target)
         self.redis_client.hset(path, "inode", inode)
-        self.redis_client.hset(inode, "attr", json.dumps(attr))
+        self.__set_attr(inode, attr)
         self.redis_client.hset(path, "parent", target)
         self.redis_client.lpush(parent + ":children", children)
 
@@ -296,7 +310,7 @@ class Passthrough(Operations):
         inode = self.redis_client.hget(new, "inode")
         attr = json.loads(self.redis_client.hget(inode, "attr"))
         attr['st_ctime'] = now
-        self.redis_client.hset(inode, "attr", json.dumps(attr))
+        self.__set_attr(inode, attr)
         return 0
 
     def link(self, path, target):
@@ -323,13 +337,13 @@ class Passthrough(Operations):
         attr['st_mtime'] = now
 
         self.redis_client.hset(inode, "links", json.dumps(links))
-        self.redis_client.hset(inode, "attr", json.dumps(attr))
+        self.__set_attr(inode, attr)
         self.redis_client.lpush(parent + ":children", children)
         self.redis_client.hset(path, "type", "hardlink")
         self.redis_client.hset(path, "inode", inode)
 
         self.__touch_ctime_mtime(parent)
-
+        self.attr_cache.pop(inode, None)
         print("link created")
 
         return 0
@@ -344,7 +358,7 @@ class Passthrough(Operations):
         attr = json.loads(self.redis_client.hget(inode, "attr"))
         attr['st_atime'] = atime
         attr['st_mtime'] = mtime
-        self.redis_client.hset(inode, "attr", json.dumps(attr))
+        self.__set_attr(inode, attr)
         return 0
 
     def open(self, path, flags):
@@ -378,7 +392,7 @@ class Passthrough(Operations):
         self.redis_client.hset(path, "type", "file")
         self.redis_client.hset(path, "inode", inode)
 
-        self.redis_client.hset(inode, "attr", json.dumps(attr))
+        self.__set_attr(inode, attr)
         self.redis_client.hset(path, "parent", path)
         self.redis_client.lpush(parent + ":children", children)
 
@@ -423,7 +437,7 @@ class Passthrough(Operations):
 
         attr['st_size'] = len(payload)
 
-        self.redis_client.hset(inode, "attr", json.dumps(attr))
+        self.__set_attr(inode, attr)
         return len(buf)
 
     def truncate(self, path, length, fh=None):
@@ -460,7 +474,7 @@ class Passthrough(Operations):
 
             self.redis_client.hset(inode, "payload", payload[:length])
 
-        self.redis_client.hset(inode, "attr", json.dumps(attr))
+        self.__set_attr(inode, attr)
 
         return 0
 

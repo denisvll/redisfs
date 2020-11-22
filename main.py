@@ -303,7 +303,6 @@ class Passthrough(Operations):
                 if len(self.redis_client.lrange(new + ":children", 0, -1)) > 0:
                     raise FuseOSError(errno.ENOTEMPTY)
 
-
         self.redis_client.lrem(old_parent + ":children", 0, old_children)
         self.redis_client.rename(old, new)
         self.redis_client.lpush(new_parent + ":children", new_children)

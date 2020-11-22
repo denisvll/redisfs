@@ -24,6 +24,14 @@ class Passthrough(Operations):
     def __init__(self, redis_client):
         self.redis_client = redis_client
 
+    def __touch_ctime_mtime(self, path):
+        now = time()
+        inode = self.redis_client.hget(path, "inode")
+        attr = json.loads(self.redis_client.hget(inode, "attr"))
+        attr['st_ctime'] = now
+        attr['st_mtime'] = now
+        self.redis_client.hset(inode, "attr", json.dumps(attr))
+
     def access(self, path, mode):
         print("access", path, mode)
         return 0
@@ -50,13 +58,7 @@ class Passthrough(Operations):
     def chown(self, path, uid, gid):
         print("chown", path, uid, gid)
         now = time()
-        # itype = str(self.redis_client.hget(path, "type"), encoding='utf-8')
-        # if itype == "hardlink":
-        #     print("hehey")
-        #     parent = self.redis_client.hget(path, "parent")
-        #     filepath = parent
-        # else:
-        #     filepath = path
+
         inode = self.redis_client.hget(path, "inode")
         attr = json.loads(self.redis_client.hget(inode, "attr"))
         print("Got", attr['st_mode'])
@@ -80,12 +82,6 @@ class Passthrough(Operations):
 
         try:
             inode = str(self.redis_client.hget(path, "inode"), encoding='utf-8')
-            #     itype = str(self.redis_client.hget(path, "type"), encoding='utf-8')
-            #     if itype == "hardlink":
-            #         print("hehey")
-            #         parent = self.redis_client.hget(path, "parent")
-            #         attr = json.loads(self.redis_client.hget(inode, "attr"))
-            #     else:
             attr = json.loads(self.redis_client.hget(inode, "attr"))
             pprint.pprint(attr)
 
@@ -160,16 +156,11 @@ class Passthrough(Operations):
         self.redis_client.hset(path, "parent", path)
         self.redis_client.lpush(parent + ":children", children)
 
-        parent_inode = self.redis_client.hget(parent, "inode")
-        parent_attr = json.loads(self.redis_client.hget(parent_inode, "attr"))
-        parent_attr['st_ctime'] = now
-        parent_attr['st_mtime'] = now
-        self.redis_client.hset(parent_inode, "attr", json.dumps(parent_attr))
+        self.__touch_ctime_mtime(parent)
         return 0
 
     def rmdir(self, path):
         print("rmdir")
-        now = time()
         parent = os.path.dirname(path)
         children = os.path.basename(path)
         all_keys = list(self.redis_client.hgetall(path).keys())
@@ -183,11 +174,8 @@ class Passthrough(Operations):
         self.redis_client.delete(inode)
         self.redis_client.lrem(parent + ":children", 0, children)
 
-        parent_inode = self.redis_client.hget(parent, "inode")
-        parent_attr = json.loads(self.redis_client.hget(parent_inode, "attr"))
-        parent_attr['st_ctime'] = now
-        parent_attr['st_mtime'] = now
-        self.redis_client.hset(parent_inode, "attr", json.dumps(parent_attr))
+        self.__touch_ctime_mtime(parent)
+
         return 0
 
     def mkdir(self, path, mode):
@@ -217,11 +205,7 @@ class Passthrough(Operations):
         self.redis_client.hset(path, "parent", path)
         self.redis_client.lpush(parent + ":children", children)
 
-        parent_inode = self.redis_client.hget(parent, "inode")
-        parent_attr = json.loads(self.redis_client.hget(parent_inode, "attr"))
-        parent_attr['st_ctime'] = now
-        parent_attr['st_mtime'] = now
-        self.redis_client.hset(parent_inode, "attr", json.dumps(parent_attr))
+        self.__touch_ctime_mtime(parent)
 
         return 0
 
@@ -256,11 +240,7 @@ class Passthrough(Operations):
             self.redis_client.hset(inode, "attr", json.dumps(attr))
             self.redis_client.delete(inode)
 
-        parent_inode = self.redis_client.hget(parent, "inode")
-        parent_attr = json.loads(self.redis_client.hget(parent_inode, "attr"))
-        parent_attr['st_ctime'] = now
-        parent_attr['st_mtime'] = now
-        self.redis_client.hset(parent_inode, "attr", json.dumps(parent_attr))
+        self.__touch_ctime_mtime(parent)
 
         print("unlink")
         return 0
@@ -292,11 +272,8 @@ class Passthrough(Operations):
         self.redis_client.hset(path, "parent", target)
         self.redis_client.lpush(parent + ":children", children)
 
-        parent_inode = self.redis_client.hget(parent, "inode")
-        parent_attr = json.loads(self.redis_client.hget(parent_inode, "attr"))
-        parent_attr['st_ctime'] = now
-        parent_attr['st_mtime'] = now
-        self.redis_client.hset(parent_inode, "attr", json.dumps(parent_attr))
+        self.__touch_ctime_mtime(parent)
+
         return 0
 
     def rename(self, old, new):
@@ -312,7 +289,6 @@ class Passthrough(Operations):
                 if len(self.redis_client.lrange(new + ":children", 0, -1)) > 0:
                     raise FuseOSError(errno.ENOTEMPTY)
 
-                # raise FuseOSError(errno.EEXIST)
 
         self.redis_client.lrem(old_parent + ":children", 0, old_children)
         self.redis_client.rename(old, new)
@@ -331,18 +307,6 @@ class Passthrough(Operations):
         now = time()
         inode = self.redis_client.hget(target, "inode")
         attr = json.loads(self.redis_client.hget(inode, "attr"))
-        # try:
-        #     itype = str(self.redis_client.hget(target, "type"), encoding='utf-8')
-        #     if itype == "hardlink":
-        #         print("hehey")
-        #         parent_hardlink = self.redis_client.hget(target, "parent")
-        #         attr = json.loads(self.redis_client.hget(parent_hardlink, "attr"))
-        #     else:
-        #         attr = json.loads(self.redis_client.hget(target, "attr"))
-        #
-        # except TypeError:
-        #     print("not found")
-        #     raise FuseOSError(errno.ENOENT)
 
         if attr['st_nlink'] == 1:
             print("no links")
@@ -364,11 +328,8 @@ class Passthrough(Operations):
         self.redis_client.hset(path, "type", "hardlink")
         self.redis_client.hset(path, "inode", inode)
 
-        parent_inode = self.redis_client.hget(parent, "inode")
-        parent_attr = json.loads(self.redis_client.hget(parent_inode, "attr"))
-        parent_attr['st_ctime'] = now
-        parent_attr['st_mtime'] = now
-        self.redis_client.hset(parent_inode, "attr", json.dumps(parent_attr))
+        self.__touch_ctime_mtime(parent)
+
         print("link created")
 
         return 0
@@ -421,11 +382,8 @@ class Passthrough(Operations):
         self.redis_client.hset(path, "parent", path)
         self.redis_client.lpush(parent + ":children", children)
 
-        parent_inode = self.redis_client.hget(parent, "inode")
-        parent_attr = json.loads(self.redis_client.hget(parent_inode, "attr"))
-        parent_attr['st_ctime'] = now
-        parent_attr['st_mtime'] = now
-        self.redis_client.hset(parent_inode, "attr", json.dumps(parent_attr))
+        self.__touch_ctime_mtime(parent)
+
         return 0
 
     def read(self, path, length, offset, fh):
@@ -434,20 +392,15 @@ class Passthrough(Operations):
         print("Offset", offset)
 
         inode = self.redis_client.hget(path, "inode")
-        # if itype == "hardlink":
-        #     print("hehey")
-        #     parent = self.redis_client.hget(path, "parent")
-        #     filepath = parent
-        # else:
-        #     filepath = path
-
         payload = self.redis_client.hget(inode, "payload")
+
         if payload is None:
             payload = ''
-        reqested_payload = payload[offset:(offset + length)]
+
+        requested_payload = payload[offset:(offset + length)]
         print("got from redis:", len(payload))
-        print("Got:", len(reqested_payload))
-        return reqested_payload
+        print("Got:", len(requested_payload))
+        return requested_payload
 
     def write(self, path, buf, offset, fh):
         print("write")
